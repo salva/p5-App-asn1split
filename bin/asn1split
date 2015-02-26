@@ -1,0 +1,125 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Errno ();
+use 5.010;
+
+use constant ASN1_UNIVERSAL        => 0x00;
+use constant ASN1_APPLICATION      => 0x40;
+use constant ASN1_CONTEXT_SPECIFIC => 0x80;
+use constant ASN1_PRIVATE          => 0xc0;
+use constant ASN1_DOMAIN_MASK      => 0xc0;
+
+use constant ASN1_PRIMITIVE        => 0x00;
+use constant ASN1_CONSTRUCTED      => 0x20;
+use constant ASN1_TYPE_MASK        => 0xe0;
+
+use constant ASN1_BOOLEAN          => 0x01;
+use constant ASN1_INTEGER          => 0x02;
+use constant ASN1_OCTET_STRING     => 0x04;
+use constant ASN1_ENUMERATED       => 0x0a;
+use constant ASN1_SEQUENCE         => 0x10;
+use constant ASN1_SET              => 0x11;
+
+my $ix = 0;
+my $in_fn  = shift // '-';
+my $out_fn = shift // 'out';
+
+my $in_fh;
+if ($in_fn eq '-') {
+    open $in_fh, '<=&0' or die "unable to read from stdin: $!";
+}
+else {
+    open $in_fh, '<', $in_fn or die "unable to open $in_fn: $!";
+}
+binmode $in_fh;
+
+my $buffer = '';
+while (1) {
+    my $rl = record_length($buffer);
+    if ($rl) {
+        write_record(substr($buffer, 0, $rl, ''));
+    }
+    else {
+        my $len = 1024 + int(1.5 * length $buffer);
+        my $read = sysread $in_fh, $buffer, $len, length $buffer;
+        unless ($read) {
+            if (defined $read) {
+                write_record($buffer);
+            }
+            else {
+                if ($! == Errno::EAGAIN()) {
+                    die "unable to read from $in_fn: $!";
+                }
+                sleep 1;
+            }
+        }
+    }
+}
+
+sub write_record {
+    my $data = shift;
+    my $fn = "$out_fn-$ix";
+    $ix++;
+    open my $out_fh, '>', $fn or die "unable to open $fn";
+    binmode $out_fh;
+    while (length $data) {
+        my $bytes = syswrite($out_fh, $data);
+        if ($bytes) {
+            substr($data, 0, $bytes, '');
+        }
+        else {
+            if ($! != Errno::EAGAIN()) {
+                die "unable to write to $fn: $!";
+            }
+            sleep 1;
+        }
+    }
+}
+
+sub u8 { unpack(C => substr $_[0], 0, 1, '') // die \undef}
+
+sub scan_length {
+    my $u8 = &u8;
+    if ($u8 & 0x80) {
+        die "indefinite" if $u8 == 0x80;
+
+        my $chars = $u8 & 0x7f;
+        my $l = 0;
+        while ($chars--) {
+            $l <<= 8;
+            $l += &u8;
+        }
+        return $l + 1;
+    }
+    $u8 + 1;
+}
+
+sub record_length {
+    eval {
+        my $u8 = &u8;
+        my $len = 1;
+        my $type = $u8 & ASN1_TYPE_MASK;
+        my $tag = $u8 & 0x1f;
+        if ($tag == 0x1f) {
+            $tag = 0;
+            while (1) {
+                $tag <<= 7;
+                my $u8 = &u8;
+                $len++;
+                $tag += $u8 & 0x7f;
+                last unless $u8 & 0x80;
+            }
+        }
+
+        warn "tag: $tag, type: $type\n";
+
+        if ($type & ASN1_CONSTRUCTED) {
+            my $load_len = &scan_length;
+            warn "load_len: $load_len\n";
+            return $load_len + $len;
+        }
+    }
+}
