@@ -23,6 +23,7 @@ use constant ASN1_ENUMERATED       => 0x0a;
 use constant ASN1_SEQUENCE         => 0x10;
 use constant ASN1_SET              => 0x11;
 
+$| = 1;
 my $ix = 0;
 my $in_fn  = shift // '-';
 my $out_fn = shift // 'out';
@@ -75,7 +76,7 @@ sub write_record {
     my $data = shift;
     my $fn = "$out_fn-$ix";
     $ix++;
-    open my $out_fh, '>', $fn or die "unable to open $fn";
+    open my $out_fh, '>', $fn or die "unable to open $fn: $!";
     binmode $out_fh;
     while (length $data) {
         my $bytes = syswrite($out_fh, $data);
@@ -89,6 +90,8 @@ sub write_record {
             sleep 1;
         }
     }
+    close $out_fh or die "unable to close file $fn: $!";
+    print ($ix % 100 ? "." : ". - $ix\n");
 }
 
 sub u8 { unpack(C => substr $_, 0, 1, '') // die \undef}
