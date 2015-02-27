@@ -23,10 +23,19 @@ use constant ASN1_ENUMERATED       => 0x0a;
 use constant ASN1_SEQUENCE         => 0x10;
 use constant ASN1_SET              => 0x11;
 
+my ($in_fn, $out_fn, $n);
+
+use Getopt::Long;
+GetOptions("src=s" => \$in_fn,
+           "to=s"  => \$out_fn,
+           "n=i"   => \$n);
+
+$n ||= 1;
+$in_fn //= '-';
+$out_fn //= ($in_fn eq '-' ? 'out' : "$in_fn-part");
+
 $| = 1;
 my $ix = 0;
-my $in_fn  = shift // '-';
-my $out_fn = shift // 'out';
 
 my $in_fh;
 if ($in_fn eq '-') {
@@ -37,28 +46,36 @@ else {
 }
 binmode $in_fh;
 
+my $eof;
 my $buffer = '';
-while (1) {
-    my $rl = record_length($buffer);
-    if ($rl and length $buffer > $rl) {
-        write_record(substr($buffer, 0, $rl, ''));
-    }
-    else {
-        my $len = 1024 + int(1.5 * length $buffer);
-        my $read = sysread $in_fh, $buffer, $len, length $buffer;
-        unless ($read) {
-            if (defined $read) {
-                write_record($buffer);
-            }
-            else {
-                if ($! == Errno::EAGAIN()) {
-                    die "unable to read from $in_fn: $!";
+do {
+    my $part_fn = "$out_fn-$ix";
+    for my $i (0..$n-1) {
+        my $rl = record_length($buffer);
+        if ($rl and length $buffer > $rl) {
+            write_record($part_fn, substr($buffer, 0, $rl, ''));
+        }
+        else {
+            my $len = 1024 + int(1.5 * length $buffer);
+            my $read = sysread $in_fh, $buffer, $len, length $buffer;
+            unless ($read) {
+                if (defined $read) {
+                    write_record($part_fn, $buffer);
+                    $eof++;
+                    last;
                 }
-                sleep 1;
+                else {
+                    if ($! == Errno::EAGAIN()) {
+                        die "unable to read from $in_fn: $!";
+                    }
+                    sleep 1;
+                }
             }
         }
     }
-}
+    $ix++;
+    print ($eof || !($ix % 1000) ? ". - $ix\n" : ".") if $eof or not $ix % 10;
+} until $eof;
 
 sub hexdump {
     no warnings qw(uninitialized);
@@ -73,10 +90,8 @@ sub hexdump {
 }
 
 sub write_record {
-    my $data = shift;
-    my $fn = "$out_fn-$ix";
-    $ix++;
-    open my $out_fh, '>', $fn or die "unable to open $fn: $!";
+    my ($part_fn, $data) = @_;
+    open my $out_fh, '>>', $part_fn or die "unable to open $part_fn: $!";
     binmode $out_fh;
     while (length $data) {
         my $bytes = syswrite($out_fh, $data);
@@ -85,13 +100,12 @@ sub write_record {
         }
         else {
             if ($! != Errno::EAGAIN()) {
-                die "unable to write to $fn: $!";
+                die "unable to write to $part_fn: $!";
             }
             sleep 1;
         }
     }
-    close $out_fh or die "unable to close file $fn: $!";
-    print ($ix % 100 ? "." : ". - $ix\n");
+    close $out_fh or die "unable to close file $part_fn: $!";
 }
 
 sub u8 { unpack(C => substr $_, 0, 1, '') // die \undef}
